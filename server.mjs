@@ -63,24 +63,55 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
-/** GET /relay  -> server-side post to Discord using query (?m) or (?code&lang) */
+function buildDiscordContent({ msg = "", code = "", lang = "" }) {
+  // prefer message if present
+  if (msg && msg.length <= 2000) return msg;
+
+  // normalize code + language
+  const safeLang = String(lang || "")
+    .replace(/[^\w.+\-#]/g, "")
+    .slice(0, 20);
+  let safeCode = String(code || "").replace(/\r\n/g, "\n");
+
+  const open = "```" + safeLang + "\n";
+  const close = "\n```";
+  const max = 2000;
+  const room = Math.max(0, max - open.length - close.length);
+
+  if (safeCode.length > room) {
+    // keep a small suffix to indicate truncation (fits within 2000)
+    const suffix = "\n…[truncated]";
+    const keep = Math.max(0, room - suffix.length);
+    safeCode = safeCode.slice(0, keep) + suffix;
+  }
+  return open + safeCode + close;
+}
+
 app.get("/relay", async (req, res) => {
   try {
-    // Optional: referer allowlist (defense-in-depth; OK to remove if annoying)
     const referer = req.headers.referer || "";
-    const allowedReferers = (process.env.ALLOWED_REFERERS || "https://www.roblox.com,https://web.roblox.com")
-      .split(",").map(s => s.trim()).filter(Boolean);
-    if (referer && allowedReferers.length && !allowedReferers.some(r => referer.startsWith(r))) {
+    const allowedReferers = (
+      process.env.ALLOWED_REFERERS ||
+      "https://www.roblox.com,https://web.roblox.com"
+    )
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (
+      referer &&
+      allowedReferers.length &&
+      !allowedReferers.some((r) => referer.startsWith(r))
+    ) {
       return html(res, 403, "Forbidden (bad referer)");
     }
 
-    const msg  = (req.query.m || "").toString().trim();
+    const msg = (req.query.m || "").toString();
     const code = req.query.code != null ? String(req.query.code) : "";
-    const lang = (req.query.lang || "").toString().trim();
+    const lang = (req.query.lang || "").toString();
 
     if (!msg && !code) return html(res, 400, "Missing message or code");
 
-    const content = msg || `\`\`\`${lang}\n${code}\n\`\`\``;
+    const content = buildDiscordContent({ msg, code, lang });
 
     if (!process.env.DISCORD_WEBHOOK_URL) {
       return html(res, 500, "Webhook not configured");
@@ -89,12 +120,16 @@ app.get("/relay", async (req, res) => {
     const r = await fetch(process.env.DISCORD_WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content })
+      body: JSON.stringify({ content }),
     });
 
     if (!r.ok && r.status !== 204) {
       const t = await r.text();
-      return html(res, 502, `Discord error: ${r.status}<br>${escapeHtml(t).slice(0,500)}`);
+      return html(
+        res,
+        502,
+        `Discord error: ${r.status}<br>${escapeHtml(t).slice(0, 500)}`
+      );
     }
 
     return html(res, 200, "Sent ✅", true);
@@ -103,21 +138,17 @@ app.get("/relay", async (req, res) => {
   }
 });
 
-
-/** POST /api/discord -> forwards {content}|{code,lang} */
 app.post("/discord", async (req, res) => {
   try {
-    // if (!checkAuth(req, res)) return;
+    // if (!checkAuth(req, res)) return; // keep/restore auth as you prefer
     const body = await readJson(req);
+    const { content, code, lang, embeds } = body || {};
 
-    let { content, code, lang, embeds } = body || {};
     if (!content && !embeds && !code) {
       return res.status(400).json({ error: "content or code required" });
     }
-    if (!content && code) {
-      const fence = "```";
-      content = `${fence}${(lang || "").trim()}\n${String(code)}\n${fence}`;
-    }
+
+    const finalContent = content || buildDiscordContent({ code, lang });
 
     if (!process.env.DISCORD_WEBHOOK_URL) {
       return res.status(500).json({ error: "Webhook not configured" });
@@ -126,10 +157,10 @@ app.post("/discord", async (req, res) => {
     const r = await fetch(process.env.DISCORD_WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content, embeds }),
+      body: JSON.stringify({ content: finalContent, embeds }),
     });
 
-    const text = await r.text(); // for logging if needed
+    const text = await r.text();
     if (!r.ok && r.status !== 204) {
       return res
         .status(502)
