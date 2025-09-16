@@ -63,29 +63,29 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
-function buildDiscordContent({ msg = "", code = "", lang = "" }) {
-  // prefer message if present
-  if (msg && msg.length <= 2000) return msg;
+function normalizeQuotes(s) {
+  // map curly quotes to ASCII
+  return String(s)
+    .replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'") // ‘ ’ ‚ ‛ ′ → '
+    .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"'); // “ ” „ ‟ ″ → "
+}
 
-  // normalize code + language
+function buildDiscordContent({ msg = "", code = "", lang = "" }) {
+  if (msg && msg.length <= 2000) return msg;
   const safeLang = String(lang || "")
     .replace(/[^\w.+\-#]/g, "")
     .slice(0, 20);
-  let safeCode = String(code || "").replace(/\r\n/g, "\n");
-
-  const open = "```" + safeLang + "\n";
-  const close = "\n```";
-  const max = 2000;
-  const room = Math.max(0, max - open.length - close.length);
-
+  let safeCode = normalizeQuotes(String(code || "")).replace(/\r\n/g, "\n");
+  const open = "```" + safeLang + "\n",
+    close = "\n```";
+  const room = Math.max(0, 2000 - open.length - close.length);
   if (safeCode.length > room) {
-    // keep a small suffix to indicate truncation (fits within 2000)
     const suffix = "\n…[truncated]";
-    const keep = Math.max(0, room - suffix.length);
-    safeCode = safeCode.slice(0, keep) + suffix;
+    safeCode = safeCode.slice(0, Math.max(0, room - suffix.length)) + suffix;
   }
   return open + safeCode + close;
 }
+
 
 app.get("/relay", async (req, res) => {
   try {
