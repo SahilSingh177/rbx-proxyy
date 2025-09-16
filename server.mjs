@@ -49,10 +49,65 @@ async function readJson(req) {
 /** Health check */
 app.get("/ping", (_req, res) => res.json({ ok: true }));
 
+/** tiny HTML helpers for /relay responses */
+function html(res, status, message, autoclose = false) {
+  res.status(status).type("text/html; charset=utf-8").send(
+    `<!doctype html><meta charset="utf-8"><title>relay</title>
+     <body style="font-family:system-ui;padding:16px">
+       <div>${message}</div>
+       ${autoclose ? `<script>setTimeout(()=>window.close(),1200)</script>` : ""}
+     </body>`
+  );
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+/** GET /relay  -> server-side post to Discord using query (?m) or (?code&lang) */
+app.get("/relay", async (req, res) => {
+  try {
+    // Optional: referer allowlist (defense-in-depth; OK to remove if annoying)
+    const referer = req.headers.referer || "";
+    const allowedReferers = (process.env.ALLOWED_REFERERS || "https://www.roblox.com,https://web.roblox.com")
+      .split(",").map(s => s.trim()).filter(Boolean);
+    if (referer && allowedReferers.length && !allowedReferers.some(r => referer.startsWith(r))) {
+      return html(res, 403, "Forbidden (bad referer)");
+    }
+
+    const msg  = (req.query.m || "").toString().trim();
+    const code = req.query.code != null ? String(req.query.code) : "";
+    const lang = (req.query.lang || "").toString().trim();
+
+    if (!msg && !code) return html(res, 400, "Missing message or code");
+
+    const content = msg || `\`\`\`${lang}\n${code}\n\`\`\``;
+
+    if (!process.env.DISCORD_WEBHOOK_URL) {
+      return html(res, 500, "Webhook not configured");
+    }
+
+    const r = await fetch(process.env.DISCORD_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content })
+    });
+
+    if (!r.ok && r.status !== 204) {
+      const t = await r.text();
+      return html(res, 502, `Discord error: ${r.status}<br>${escapeHtml(t).slice(0,500)}`);
+    }
+
+    return html(res, 200, "Sent ✅", true);
+  } catch (e) {
+    return html(res, 400, "Error: " + escapeHtml(e?.message || e));
+  }
+});
+
+
 /** POST /api/discord -> forwards {content}|{code,lang} */
 app.post("/discord", async (req, res) => {
   try {
-    if (!checkAuth(req, res)) return;
+    // if (!checkAuth(req, res)) return;
     const body = await readJson(req);
 
     let { content, code, lang, embeds } = body || {};
