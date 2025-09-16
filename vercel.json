@@ -1,4 +1,4 @@
 {
-  "functions": { "api/index.js": { "runtime": "nodejs20.x" } },
+  "functions": { "api/index.js": { "runtime": "nodejs20.x@4.0.0" } },
   "routes": [{ "src": "/api/(.*)", "dest": "/api/index.js" }]
 }
