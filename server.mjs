@@ -89,6 +89,7 @@ function buildDiscordContent({ msg = "", code = "", lang = "" }) {
 
 app.get("/relay", async (req, res) => {
   try {
+    // Optional referer allowlist
     const referer = req.headers.referer || "";
     const allowedReferers = (
       process.env.ALLOWED_REFERERS ||
@@ -106,12 +107,24 @@ app.get("/relay", async (req, res) => {
     }
 
     const msg = (req.query.m || "").toString();
-    const code = req.query.code != null ? String(req.query.code) : "";
     const lang = (req.query.lang || "").toString();
+
+    // Accept either ?code=... or Base64 via ?code_b64=...
+    let code = req.query.code != null ? String(req.query.code) : "";
+    if (!code && req.query.code_b64 != null) {
+      try {
+        code = Buffer.from(String(req.query.code_b64), "base64").toString(
+          "utf8"
+        );
+      } catch {
+        return html(res, 400, "Invalid code_b64");
+      }
+    }
 
     if (!msg && !code) return html(res, 400, "Missing message or code");
 
-    const content = buildDiscordContent({ msg, code, lang });
+    // Build a safe Discord message (<= 2000 chars), with fencing when using code
+    const content = msg || buildDiscordContent({ code, lang });
 
     if (!process.env.DISCORD_WEBHOOK_URL) {
       return html(res, 500, "Webhook not configured");
@@ -131,12 +144,12 @@ app.get("/relay", async (req, res) => {
         `Discord error: ${r.status}<br>${escapeHtml(t).slice(0, 500)}`
       );
     }
-
     return html(res, 200, "Sent ✅", true);
   } catch (e) {
     return html(res, 400, "Error: " + escapeHtml(e?.message || e));
   }
 });
+
 
 app.post("/discord", async (req, res) => {
   try {
