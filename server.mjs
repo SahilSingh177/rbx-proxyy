@@ -1,12 +1,9 @@
 import "dotenv/config";
 import express from "express";
-import rateLimit from "express-rate-limit";
-import fetch from "node-fetch";
 
 const app = express();
-app.use(express.json({ limit: "200kb" }));
 
-// CORS: allow Roblox website
+/** CORS */
 const ORIGINS = (process.env.ALLOWED_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
@@ -18,27 +15,47 @@ app.use((req, res, next) => {
     res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Credentials", "true");
   }
-  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS,GET");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-api-key");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 
-// Rate limit + tiny auth
-app.use("/api/", rateLimit({ windowMs: 60_000, max: 60 }));
+/** Simple auth */
 function checkAuth(req, res) {
-  if (req.headers["x-api-key"] !== process.env.SHARED_SECRET) {
+  if (
+    !process.env.SHARED_SECRET ||
+    req.headers["x-api-key"] !== process.env.SHARED_SECRET
+  ) {
     res.status(401).json({ error: "Unauthorized" });
     return false;
   }
   return true;
 }
 
-// POST /api/discord  -> forwards {content}|{code,lang} to your webhook
-app.post("/api/discord", async (req, res) => {
+/** Manual JSON reader (avoids Content-Length mismatch issues) */
+async function readJson(req) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    throw new Error("Invalid JSON: " + e.message);
+  }
+}
+
+/** Health check */
+app.get("/ping", (_req, res) => res.json({ ok: true }));
+
+/** POST /api/discord -> forwards {content}|{code,lang} */
+app.post("/discord", async (req, res) => {
   try {
     if (!checkAuth(req, res)) return;
-    let { content, code, lang, embeds } = req.body || {};
+    const body = await readJson(req);
+
+    let { content, code, lang, embeds } = body || {};
     if (!content && !embeds && !code) {
       return res.status(400).json({ error: "content or code required" });
     }
@@ -46,27 +63,29 @@ app.post("/api/discord", async (req, res) => {
       const fence = "```";
       content = `${fence}${(lang || "").trim()}\n${String(code)}\n${fence}`;
     }
-    const resp = await fetch(process.env.DISCORD_WEBHOOK_URL, {
+
+    if (!process.env.DISCORD_WEBHOOK_URL) {
+      return res.status(500).json({ error: "Webhook not configured" });
+    }
+
+    const r = await fetch(process.env.DISCORD_WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content, embeds }),
     });
-    const text = await resp.text();
-    if (!resp.ok && resp.status !== 204) {
+
+    const text = await r.text(); // for logging if needed
+    if (!r.ok && r.status !== 204) {
       return res
         .status(502)
-        .json({ error: "Discord error", status: resp.status, detail: text });
+        .json({ error: "Discord error", status: r.status, detail: text });
     }
-    res.status(204).send();
+    return res.status(204).end();
   } catch (e) {
-    res.status(500).json({ error: "Server error" });
+    console.error("[discord] error:", e);
+    return res.status(400).json({ error: String(e.message || e) });
   }
 });
 
-export default app;
-
-// If running locally (not serverless)
-if (process.env.VERCEL !== "1") {
-  const port = process.env.PORT || 3000;
-  app.listen(port, () => console.log("Server on :" + port));
-}
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log("Local server on :" + port));
